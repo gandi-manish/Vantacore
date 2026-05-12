@@ -1,0 +1,99 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  employee
+  manager
+  admin
+  security_analyst
+  auditor
+}
+
+enum UserStatus {
+  active
+  suspended
+}
+
+enum Severity {
+  low
+  medium
+  high
+  critical
+}
+
+model User {
+  id           String       @id @default(uuid())
+  email        String       @unique
+  passwordHash String
+  role         Role
+  department   String
+  status       UserStatus   @default(active)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  files        File[]       @relation("OwnedFiles")
+  auditEvents  AuditEvent[] @relation("ActorAuditEvents")
+  sessions     Session[]
+}
+
+model File {
+  id               String            @id @default(uuid())
+  ownerUserId      String
+  fileName         String
+  s3Key            String            @unique
+  fileHash         String?
+  sensitivityLevel String            @default("internal")
+  department       String
+  uploadStatus     String            @default("pending")
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  owner            User              @relation("OwnedFiles", fields: [ownerUserId], references: [id])
+  accessGrants     FileAccessGrant[]
+}
+
+model FileAccessGrant {
+  id              String   @id @default(uuid())
+  fileId          String
+  grantedToUserId String
+  grantedByUserId String
+  expiresAt       DateTime?
+  createdAt       DateTime @default(now())
+
+  file            File     @relation(fields: [fileId], references: [id])
+}
+
+model AuditEvent {
+  id                 String    @id @default(uuid())
+  eventType          String
+  severity           Severity
+  actorUserId        String?
+  actorRole          String?
+  targetResourceType String?
+  targetResourceId   String?
+  department         String?
+  justification      String?
+  correlationId      String
+  ipAddress          String?
+  createdAt          DateTime  @default(now())
+
+  actor              User?     @relation("ActorAuditEvents", fields: [actorUserId], references: [id])
+}
+
+model Session {
+  id               String   @id @default(uuid())
+  userId           String
+  refreshTokenHash String
+  expiresAt        DateTime
+  revoked          Boolean  @default(false)
+  ipAddress        String?
+  userAgent        String?
+  createdAt        DateTime @default(now())
+
+  user             User     @relation(fields: [userId], references: [id])
+}

@@ -55,6 +55,21 @@ function buildS3Key(user: JwtPayload, fileName: string): string {
   return `${user.department}/${user.userId}/${uniquePart}-${safeName}`;
 }
 
+async function isFileRestricted(fileId: string): Promise<boolean> {
+  const restrictedEvent = await prisma.auditEvent.findFirst({
+    where: {
+      targetResourceType: "file",
+      targetResourceId: fileId,
+      eventType: "FILE_ACCESS_RESTRICTED",
+    },
+    orderBy: {
+      createdAt: "desc",
+    },
+  });
+
+  return Boolean(restrictedEvent);
+}
+
 export async function initiateFileUpload(params: {
   user: JwtPayload;
   input: InitiateUploadInput;
@@ -184,6 +199,25 @@ export async function requestFileDownload(params: {
     throw new ApiError(404, "File not found");
   }
 
+  const fileRestricted = await isFileRestricted(fileRecord.id);
+
+  if (fileRestricted && user.role !== "security_analyst") {
+    await createAuditEvent({
+      eventType: "FILE_DOWNLOAD_DENIED_RESTRICTED",
+      severity: "high",
+      actorUserId: user.userId,
+      actorRole: user.role,
+      targetResourceType: "file",
+      targetResourceId: fileRecord.id,
+      department: user.department,
+      justification: "Download denied because file access is restricted",
+      correlationId,
+      ipAddress,
+    });
+
+    throw new ApiError(403, "File access is currently restricted");
+  }
+
   if (fileRecord.uploadStatus !== "completed") {
     throw new ApiError(400, "File upload is not completed");
   }
@@ -298,10 +332,7 @@ export async function requestFileDownload(params: {
         targetResourceType: "ip_address",
         targetResourceId: ipAddress || "unknown",
         department: user.department,
-        justification:
-          revokedByIpCount > 0
-            ? `Risk-based containment triggered. Risk score ${risk.score}. Revoked ${revokedByIpCount} active session(s) from IP ${ipAddress}. Reasons: ${risk.reasons.join(", ")}`
-            : `Risk-based containment attempted. Risk score ${risk.score}. No active sessions found for IP ${ipAddress}. Reasons: ${risk.reasons.join(", ")}`,
+        justification: `Risk-based containment triggered. Risk score ${risk.score}. Revoked ${revokedByIpCount} active session(s) from IP ${ipAddress}. Reasons: ${risk.reasons.join(", ")}`,
         correlationId,
         ipAddress,
       });
@@ -331,5 +362,75 @@ export async function requestFileDownload(params: {
     fileName: fileRecord.fileName,
     downloadUrl,
     expiresInSeconds,
+  };
+}
+
+export async function flagFileForInvestigation(params: {
+  user: JwtPayload;
+  fileId: string;
+  justification: string;
+  correlationId?: string;
+  ipAddress?: string;
+}) {
+  const file = await prisma.file.findUnique({
+    where: { id: params.fileId },
+  });
+
+  if (!file) {
+    throw new ApiError(404, "File not found");
+  }
+
+  await createAuditEvent({
+    eventType: "FILE_FLAGGED_FOR_INVESTIGATION",
+    severity: "high",
+    actorUserId: params.user.userId,
+    actorRole: params.user.role,
+    targetResourceType: "file",
+    targetResourceId: file.id,
+    department: params.user.department,
+    justification: params.justification,
+    correlationId: params.correlationId,
+    ipAddress: params.ipAddress,
+  });
+
+  return {
+    fileId: file.id,
+    fileName: file.fileName,
+    action: "flagged_for_investigation",
+  };
+}
+
+export async function restrictFileAccess(params: {
+  user: JwtPayload;
+  fileId: string;
+  justification: string;
+  correlationId?: string;
+  ipAddress?: string;
+}) {
+  const file = await prisma.file.findUnique({
+    where: { id: params.fileId },
+  });
+
+  if (!file) {
+    throw new ApiError(404, "File not found");
+  }
+
+  await createAuditEvent({
+    eventType: "FILE_ACCESS_RESTRICTED",
+    severity: "critical",
+    actorUserId: params.user.userId,
+    actorRole: params.user.role,
+    targetResourceType: "file",
+    targetResourceId: file.id,
+    department: params.user.department,
+    justification: params.justification,
+    correlationId: params.correlationId,
+    ipAddress: params.ipAddress,
+  });
+
+  return {
+    fileId: file.id,
+    fileName: file.fileName,
+    action: "access_restricted",
   };
 }

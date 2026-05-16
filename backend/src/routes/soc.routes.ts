@@ -8,6 +8,7 @@ import {
   socIncidents,
   socSummary,
   suspendedUsers,
+  topRiskUsers,
   userTimeline,
 } from "../controllers/soc.controller";
 
@@ -21,6 +22,7 @@ router.get("/alerts", recentAlerts);
 router.get("/incidents", socIncidents);
 router.get("/containment-actions", containmentActions);
 router.get("/files/risky", riskyFiles);
+router.get("/users/risk", topRiskUsers);
 router.get("/users/suspended", suspendedUsers);
 router.get("/users/:userId/timeline", userTimeline);
 

@@ -9,6 +9,7 @@ import {
   getSocIncidents,
   getSocSummary,
   getSuspendedUsers,
+  getTopRiskUsers,
   getUserTimeline,
 } from "../services/soc.service";
 
@@ -63,6 +64,7 @@ export const userTimeline = asyncHandler(async (req: Request, res: Response) => 
     data: timeline,
   });
 });
+
 export const containmentActions = asyncHandler(
   async (_req: Request, res: Response) => {
     const actions = await getContainmentActions();
@@ -92,5 +94,15 @@ export const socIncidents = asyncHandler(async (_req: Request, res: Response) =>
     success: true,
     message: "SOC incidents fetched successfully",
     data: incidents,
+  });
+});
+
+export const topRiskUsers = asyncHandler(async (_req: Request, res: Response) => {
+  const users = await getTopRiskUsers(5);
+
+  res.status(200).json({
+    success: true,
+    message: "Top risk users fetched successfully",
+    data: users,
   });
 });

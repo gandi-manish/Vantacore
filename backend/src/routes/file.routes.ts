@@ -6,6 +6,7 @@ import {
   initiateUpload,
   flagFile,
   restrictFile,
+  listFiles,
 } from "../controllers/file.controller";
 
 
@@ -16,5 +17,6 @@ router.post("/upload/complete", requireAuth, completeUpload);
 router.post("/download", requireAuth, downloadFile);
 router.post("/:fileId/flag", requireAuth, requireRole("admin", "security_analyst"), flagFile);
 router.post("/:fileId/restrict", requireAuth, requireRole("admin", "security_analyst"), restrictFile);
+router.get("/", requireAuth, listFiles);
 
 export default router;

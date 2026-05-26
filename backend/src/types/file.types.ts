@@ -25,6 +25,7 @@ export interface CompleteUploadResponse {
 export interface DownloadFileInput {
   fileId: string;
   justification?: string;
+  incidentId?: string;
 }
 
 export interface DownloadFileResponse {

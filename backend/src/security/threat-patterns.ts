@@ -1,0 +1,11 @@
+export const ThreatPattern = {
+  ACCOUNT_TAKEOVER: "ACCOUNT_TAKEOVER",
+  MALICIOUS_INSIDER: "MALICIOUS_INSIDER",
+  DATA_EXFILTRATION: "DATA_EXFILTRATION",
+  PRIVILEGE_ABUSE: "PRIVILEGE_ABUSE",
+  TOKEN_COMPROMISE: "TOKEN_COMPROMISE",
+  AUTOMATED_ATTACK: "AUTOMATED_ATTACK",
+} as const;
+
+export type ThreatPatternType =
+  (typeof ThreatPattern)[keyof typeof ThreatPattern];

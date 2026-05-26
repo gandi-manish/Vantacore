@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import { prisma } from "../config/db";
 import { z } from "zod";
 import { asyncHandler } from "../utils/async-handler";
 import { ApiError } from "../utils/api-error";
@@ -24,6 +25,7 @@ const completeUploadSchema = z.object({
 const downloadFileSchema = z.object({
   fileId: z.string().uuid(),
   justification: z.string().optional(),
+  incidentId: z.string().uuid().optional(),
 });
 
 const fileActionSchema = z.object({
@@ -182,5 +184,22 @@ export const restrictFile = asyncHandler(async (req: Request, res: Response) => 
     success: true,
     message: "File access restricted successfully",
     data: result,
+  });
+});
+export const listFiles = asyncHandler(async (req: Request, res: Response) => {
+  if (!req.user) {
+    throw new ApiError(401, "Authentication required");
+  }
+
+  const files = await prisma.file.findMany({
+    orderBy: {
+      createdAt: "desc",
+    },
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Files retrieved successfully",
+    data: files,
   });
 });

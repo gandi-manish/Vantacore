@@ -27,49 +27,49 @@ enum Severity {
 }
 
 model User {
-  id           String       @id @default(uuid())
-  email        String       @unique
+  id           String     @id @default(uuid())
+  email        String     @unique
   passwordHash String
   role         Role
   department   String
-  status       UserStatus   @default(active)
-  createdAt    DateTime     @default(now())
-  updatedAt    DateTime     @updatedAt
+  status       UserStatus @default(active)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
 
-  files        File[]       @relation("OwnedFiles")
-  auditEvents  AuditEvent[] @relation("ActorAuditEvents")
-  sessions     Session[]
+  files       File[]       @relation("OwnedFiles")
+  auditEvents AuditEvent[] @relation("ActorAuditEvents")
+  sessions    Session[]
 }
 
 model File {
-  id               String            @id @default(uuid())
+  id               String   @id @default(uuid())
   ownerUserId      String
   fileName         String
-  s3Key            String            @unique
+  s3Key            String   @unique
   fileHash         String?
-  sensitivityLevel String            @default("internal")
+  sensitivityLevel String   @default("internal")
   department       String
-  uploadStatus     String            @default("pending")
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
+  uploadStatus     String   @default("pending")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
-  owner            User              @relation("OwnedFiles", fields: [ownerUserId], references: [id])
-  accessGrants     FileAccessGrant[]
+  owner        User              @relation("OwnedFiles", fields: [ownerUserId], references: [id])
+  accessGrants FileAccessGrant[]
 }
 
 model FileAccessGrant {
-  id              String   @id @default(uuid())
+  id              String    @id @default(uuid())
   fileId          String
   grantedToUserId String
   grantedByUserId String
   expiresAt       DateTime?
-  createdAt       DateTime @default(now())
+  createdAt       DateTime  @default(now())
 
-  file            File     @relation(fields: [fileId], references: [id])
+  file File @relation(fields: [fileId], references: [id])
 }
 
 model AuditEvent {
-  id                 String    @id @default(uuid())
+  id                 String   @id @default(uuid())
   eventType          String
   severity           Severity
   actorUserId        String?
@@ -80,9 +80,9 @@ model AuditEvent {
   justification      String?
   correlationId      String
   ipAddress          String?
-  createdAt          DateTime  @default(now())
+  createdAt          DateTime @default(now())
 
-  actor              User?     @relation("ActorAuditEvents", fields: [actorUserId], references: [id])
+  actor User? @relation("ActorAuditEvents", fields: [actorUserId], references: [id])
 }
 
 model Session {
@@ -95,5 +95,42 @@ model Session {
   userAgent        String?
   createdAt        DateTime @default(now())
 
-  user             User     @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id])
+}
+
+model SocIncident {
+  id                 String   @id @default(uuid())
+  title              String
+  severity           String
+  status             String   @default("open")
+
+  actorUserId        String?
+  actorRole          String?
+  department         String?
+  targetResourceId   String?
+  targetResourceType String?
+  ipAddress          String?
+
+  threatPattern      String?
+  confidence         Int?
+  eventCount         Int      @default(1)
+
+  assignedAnalystId  String?
+  resolutionNotes    String?
+  resolvedAt         DateTime?
+  lastUpdatedBy      String?
+
+  firstSeen          DateTime @default(now())
+  lastSeen           DateTime @default(now())
+
+  summary            String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([actorUserId])
+  @@index([targetResourceId])
+  @@index([ipAddress])
+  @@index([threatPattern])
+  @@index([status])
+  @@index([assignedAnalystId])
 }

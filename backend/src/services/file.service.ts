@@ -24,7 +24,19 @@ import {
   revokeUserSessionsByIp,
 } from "./session.service";
 import { suspendUser } from "./user.service";
-import { assessRisk, RiskSignal } from "./risk.service";
+import { RiskSignal, RiskSignalType } from "../security/risk-signals";
+import { evaluateSecurityPolicy } from "../security/policy-engine";
+import { correlateSignals } from "../security/correlation-engine";
+import { behavioralCorrelation } from "../security/behavioral-correlation";
+import { buildUserBaseline } from "../security/user-baseline";
+import { upsertSocIncident } from "./soc-incident.service";
+import { validateSecurityOverride } from "../security/override-governance";
+
+function normalizeSeverity(
+  severity: "low" | "medium" | "high" | "critical" | "severe"
+): "low" | "medium" | "high" | "critical" {
+  return severity === "severe" ? "critical" : severity;
+}
 
 function sanitizeFileName(fileName: string): string {
   return fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
@@ -231,6 +243,14 @@ export async function requestFileDownload(params: {
     },
     justification: input.justification,
   });
+  
+  if (decision.reason === "security_override_with_justification") {
+  await validateSecurityOverride({
+    incidentId: input.incidentId,
+    fileId: fileRecord.id,
+    analystUserId: user.userId,
+  });
+}
 
   if (!decision.allowed) {
     await createAuditEvent({
@@ -276,49 +296,167 @@ export async function requestFileDownload(params: {
   });
 
   if (spikeCheck.isSpike) {
-    const riskSignals: RiskSignal[] = ["DOWNLOAD_SPIKE"];
+    const signals: RiskSignalType[] = [RiskSignal.DOWNLOAD_SPIKE];
 
     if (fileRecord.sensitivityLevel === "sensitive") {
-      riskSignals.push("SENSITIVE_FILE_ACCESS");
+      signals.push(RiskSignal.SENSITIVE_FILE_ACCESS);
     }
 
     if (decision.reason === "security_override_with_justification") {
-      riskSignals.push("SECURITY_OVERRIDE");
+      signals.push(RiskSignal.SECURITY_OVERRIDE);
     }
 
-    const risk = assessRisk({
-      signals: riskSignals,
+    const baseline = await buildUserBaseline({
+      actorUserId: user.userId,
+      windowMinutes: 60,
     });
+
+    if (
+      baseline.hasHighDownloadVolume &&
+      !signals.includes(RiskSignal.UNUSUAL_ACTIVITY_BURST)
+    ) {
+      signals.push(RiskSignal.UNUSUAL_ACTIVITY_BURST);
+    }
+
+    const policy = evaluateSecurityPolicy({
+      signals,
+      metadata: {
+        actorUserId: user.userId,
+        actorRole: user.role,
+        department: user.department,
+        ipAddress,
+        fileId: fileRecord.id,
+        fileSensitivity: fileRecord.sensitivityLevel,
+        correlationId,
+      },
+    });
+
+    const correlations = correlateSignals(signals);
+    const strongestCorrelation = correlations.sort(
+      (a, b) => b.confidence - a.confidence
+    )[0];
 
     await createAuditEvent({
       eventType: "RISK_SCORE_EVALUATED",
-      severity: risk.level,
+      severity: normalizeSeverity(policy.severity),
       actorUserId: user.userId,
       actorRole: user.role,
       targetResourceType: "file",
       targetResourceId: fileRecord.id,
       department: user.department,
-      justification: `Risk score ${risk.score}/100. Action: ${risk.recommendedAction}. Reasons: ${risk.reasons.join(", ")}`,
+      justification: `Policy score ${policy.score}. Actions: ${policy.actions.join(
+        ", "
+      )}. Signals: ${policy.signals.join(", ")}. ${
+        strongestCorrelation
+          ? `Threat pattern: ${strongestCorrelation.pattern} (${strongestCorrelation.confidence}% confidence). ${strongestCorrelation.description}.`
+          : "No threat pattern correlation matched."
+      } Baseline: downloads=${baseline.recentDownloadCount}, logins=${baseline.recentLoginCount}, ips=${baseline.recentIpAddresses.length}. Reasoning: ${policy.reasoning.join(
+        " | "
+      )}`,
       correlationId,
       ipAddress,
     });
 
-    if (risk.recommendedAction === "ALERT") {
+    if (strongestCorrelation) {
       await createAuditEvent({
-        eventType: "SECURITY_ALERT_TRIGGERED",
-        severity: risk.level,
+        eventType: "THREAT_PATTERN_CORRELATED",
+        severity: normalizeSeverity(policy.severity),
         actorUserId: user.userId,
         actorRole: user.role,
         targetResourceType: "user",
         targetResourceId: user.userId,
         department: user.department,
-        justification: `Security alert triggered. Risk score ${risk.score}. Reasons: ${risk.reasons.join(", ")}`,
+        justification: `Threat pattern correlated: ${strongestCorrelation.pattern}. Confidence ${strongestCorrelation.confidence}%. ${strongestCorrelation.description}. Matched signals: ${strongestCorrelation.matchedSignals.join(
+          ", "
+        )}`,
+        correlationId,
+        ipAddress,
+      });
+
+      await upsertSocIncident({
+        title: `${strongestCorrelation.pattern} detected`,
+        severity: normalizeSeverity(policy.severity),
+        status: policy.actions.includes("lock_user")
+          ? "contained"
+          : "investigating",
+        actorUserId: user.userId,
+        actorRole: user.role,
+        department: user.department,
+        targetResourceId: fileRecord.id,
+        targetResourceType: "file",
+        ipAddress,
+        threatPattern: strongestCorrelation.pattern,
+        confidence: strongestCorrelation.confidence,
+        summary: `${strongestCorrelation.description}. Signals: ${strongestCorrelation.matchedSignals.join(
+          ", "
+        )}. Policy score: ${policy.score}.`,
+        windowMinutes: 10,
+      });
+    }
+
+    const behavioral = await behavioralCorrelation({
+      actorUserId: user.userId,
+      ipAddress,
+      windowMinutes: 5,
+    });
+
+    const strongestBehavioralCorrelation = behavioral.correlations.sort(
+      (a, b) => b.confidence - a.confidence
+    )[0];
+
+    if (strongestBehavioralCorrelation) {
+      await createAuditEvent({
+        eventType: "BEHAVIORAL_THREAT_CORRELATED",
+        severity: normalizeSeverity(policy.severity),
+        actorUserId: user.userId,
+        actorRole: user.role,
+        targetResourceType: "user",
+        targetResourceId: user.userId,
+        department: user.department,
+        justification: `Behavioral threat correlated: ${strongestBehavioralCorrelation.pattern}. Confidence ${strongestBehavioralCorrelation.confidence}%. ${strongestBehavioralCorrelation.description}. Signals: ${behavioral.aggregatedSignals.join(
+          ", "
+        )}. Recent events analyzed: ${behavioral.recentEvents.length}.`,
+        correlationId,
+        ipAddress,
+      });
+
+      await upsertSocIncident({
+        title: `Behavioral ${strongestBehavioralCorrelation.pattern} detected`,
+        severity: normalizeSeverity(policy.severity),
+        status: policy.actions.includes("lock_user")
+          ? "contained"
+          : "investigating",
+        actorUserId: user.userId,
+        actorRole: user.role,
+        department: user.department,
+        targetResourceId: fileRecord.id,
+        targetResourceType: "file",
+        ipAddress,
+        threatPattern: strongestBehavioralCorrelation.pattern,
+        confidence: strongestBehavioralCorrelation.confidence,
+        summary: `${strongestBehavioralCorrelation.description}. Behavioral signals: ${behavioral.aggregatedSignals.join(
+          ", "
+        )}. Recent events analyzed: ${behavioral.recentEvents.length}. Policy score: ${policy.score}.`,
+        windowMinutes: 10,
+      });
+    }
+
+    if (policy.actions.includes("alert")) {
+      await createAuditEvent({
+        eventType: "SECURITY_ALERT_TRIGGERED",
+        severity: normalizeSeverity(policy.severity),
+        actorUserId: user.userId,
+        actorRole: user.role,
+        targetResourceType: "user",
+        targetResourceId: user.userId,
+        department: user.department,
+        justification: `Security alert triggered by policy engine. Score ${policy.score}.`,
         correlationId,
         ipAddress,
       });
     }
 
-    if (risk.recommendedAction === "CONTAIN_SESSION_OR_IP") {
+    if (policy.actions.includes("contain_ip")) {
       const revokedByIpCount = await revokeUserSessionsByIp({
         userId: user.userId,
         ipAddress,
@@ -326,31 +464,31 @@ export async function requestFileDownload(params: {
 
       await createAuditEvent({
         eventType: "IP_BASED_CONTAINMENT_TRIGGERED",
-        severity: risk.level,
+        severity: normalizeSeverity(policy.severity),
         actorUserId: user.userId,
         actorRole: user.role,
         targetResourceType: "ip_address",
         targetResourceId: ipAddress || "unknown",
         department: user.department,
-        justification: `Risk-based containment triggered. Risk score ${risk.score}. Revoked ${revokedByIpCount} active session(s) from IP ${ipAddress}. Reasons: ${risk.reasons.join(", ")}`,
+        justification: `Policy-based IP containment. Score ${policy.score}. Revoked ${revokedByIpCount} active session(s) from IP ${ipAddress}.`,
         correlationId,
         ipAddress,
       });
     }
 
-    if (risk.recommendedAction === "LOCK_USER") {
+    if (policy.actions.includes("lock_user")) {
       await suspendUser(user.userId);
       const revokedCount = await revokeAllUserSessions(user.userId);
 
       await createAuditEvent({
         eventType: "USER_ACCOUNT_LOCKED",
-        severity: risk.level,
+        severity: "critical",
         actorUserId: user.userId,
         actorRole: user.role,
         targetResourceType: "user",
         targetResourceId: user.userId,
         department: user.department,
-        justification: `Risk-based account lock. Risk score ${risk.score}. Revoked ${revokedCount} active session(s). Reasons: ${risk.reasons.join(", ")}`,
+        justification: `Policy-based account lock. Score ${policy.score}. Revoked ${revokedCount} active session(s).`,
         correlationId,
         ipAddress,
       });
